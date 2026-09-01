@@ -4,3 +4,9 @@ uvicorn
 
 # Used by FastAPI TestClient in the automated tests.
 httpx
+
+# PL5 multiclass model and automated tests.
+lightgbm
+numpy
+scikit-learn
+pytest

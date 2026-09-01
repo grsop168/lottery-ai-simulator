@@ -173,6 +173,7 @@ class GameDashboard:
     recent_recommendations: Tuple[RecommendationRecord, ...] = ()
     target_draw_dates: Dict[str, str] = field(default_factory=dict)
     analysis: DashboardGameAnalysis = field(default_factory=DashboardGameAnalysis)
+    model_comparison: Tuple[Dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -968,6 +969,7 @@ def _load_game_dashboard(reports_path: Path, code: str, name: str) -> GameDashbo
     draw_dates = _load_dashboard_draw_dates(reports_path, code)
     target_draw_dates = _recommendation_target_draw_dates(records, draw_dates, code)
     analysis = _load_dashboard_game_analysis(reports_path, code, candidates)
+    model_comparison = _load_pl5_model_comparison(reports_path) if code == "pl5" else ()
     return GameDashboard(
         code=code,
         name=name,
@@ -987,7 +989,20 @@ def _load_game_dashboard(reports_path: Path, code: str, name: str) -> GameDashbo
         recent_recommendations=_recent_recommendation_records(records),
         target_draw_dates=target_draw_dates,
         analysis=analysis,
+        model_comparison=model_comparison,
     )
+
+
+def _load_pl5_model_comparison(reports_path: Path) -> Tuple[Dict[str, Any], ...]:
+    path = Path(reports_path) / "model-comparison-pl5.json"
+    if not path.exists():
+        return ()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        models = payload.get("models", [])
+        return tuple(item for item in models if isinstance(item, dict))
+    except (OSError, ValueError, TypeError):
+        return ()
 
 
 def _load_dashboard_recommendation_records(reports_path: Path, game_code: str) -> Tuple[RecommendationRecord, ...]:
@@ -1771,6 +1786,7 @@ def _render_lottery_pane(game: GameDashboard, summary_text: str, active: bool) -
   {_render_game_overview(game)}
   {_render_game_candidates(game)}
   {_render_game_analysis(game)}
+  {_render_pl5_model_comparison(game)}
   {_render_game_summary(game, summary_text)}
   {_render_game_reports(game)}
 </section>
@@ -1785,6 +1801,8 @@ def _render_game_view_tabs(game: GameDashboard) -> str:
         (f"summary-{game.code}", "长期汇总"),
         (f"reports-{game.code}", "原始报告"),
     ]
+    if game.code == "pl5":
+        tabs.insert(3, (f"model-comparison-{game.code}", "模型对比"))
     buttons = "\n".join(
         f"<button type=\"button\" class=\"tab{' active' if index == 0 else ''}\" data-target=\"{view}\">{label}</button>"
         for index, (view, label) in enumerate(tabs)
@@ -1826,6 +1844,52 @@ def _render_game_analysis(game: GameDashboard) -> str:
 </section>
 """.strip()
     return f"<section class=\"view\" data-view=\"analysis-{html.escape(game.code)}\">{content}</section>"
+
+
+def _render_pl5_model_comparison(game: GameDashboard) -> str:
+    if game.code != "pl5":
+        return ""
+    if not game.model_comparison:
+        content = '<p class="empty">暂无模型对比结果，请先生成排列五推荐报告。</p>'
+    else:
+        rows = []
+        labels = {"random": "Random", "logistic": "Logistic", "markov": "Markov", "lightgbm": "LightGBM", "house": "House hypothesis"}
+        for metric in game.model_comparison:
+            coverage = metric.get("candidate_exact_coverage", {}) or {}
+            returns = metric.get("returns", {}) or {}
+            top10 = returns.get("top10", {}) or {}
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape(labels.get(str(metric.get('model_name', '')), str(metric.get('model_name', ''))))}</td>"
+                f"<td>{_format_dashboard_percent(metric.get('mean_position_accuracy', 0))}</td>"
+                f"<td>{_format_dashboard_percent(metric.get('mean_top3_coverage', 0))}</td>"
+                f"<td>{_format_dashboard_percent(metric.get('mean_top5_coverage', 0))}</td>"
+                f"<td>{float(metric.get('average_correct_positions', 0)):.3f}</td>"
+                f"<td>{html.escape(str(metric.get('exact_hits', 0)))}</td>"
+                f"<td>{float(metric.get('log_loss', 0)):.4f}</td>"
+                f"<td>{float(metric.get('brier_score', 0)):.4f}</td>"
+                f"<td>{_format_dashboard_percent(coverage.get('top10', 0))}</td>"
+                f"<td>{_format_dashboard_percent(coverage.get('top50', 0))}</td>"
+                f"<td>{_format_dashboard_percent(coverage.get('top100', 0))}</td>"
+                f"<td>{_format_dashboard_percent(top10.get('return_rate', 0))}</td>"
+                f"<td>{_format_dashboard_percent(top10.get('profit_roi', 0))}</td>"
+                "</tr>"
+            )
+        content = (
+            '<div class="panel"><table><thead><tr><th>模型</th><th>Top1</th><th>Top3</th><th>Top5</th>'
+            '<th>平均命中位数</th><th>完整命中</th><th>LogLoss</th><th>Brier</th><th>Top10覆盖</th>'
+            '<th>Top50覆盖</th><th>Top100覆盖</th><th>Top10返奖率</th><th>Top10净收益率</th>'
+            '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+            '<p class="panel-note">历史模拟结果不代表未来盈利能力。返奖率=总返奖/总成本；净收益率=(总返奖-总成本)/总成本。</p></div>'
+        )
+    return f'<section class="view" data-view="model-comparison-pl5">{content}</section>'
+
+
+def _format_dashboard_percent(value: Any) -> str:
+    try:
+        return f"{float(value) * 100:.2f}%"
+    except (TypeError, ValueError):
+        return "0.00%"
 
 
 def _render_analysis_section(section: DashboardAnalysisSection) -> str:

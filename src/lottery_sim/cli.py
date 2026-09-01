@@ -1,4 +1,6 @@
 import argparse
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -8,12 +10,15 @@ from lottery_sim.analysis.stability import (
     summarize_seed_sensitivity,
 )
 from lottery_sim.analysis.metrics import winning_bet_count
+from lottery_sim.analysis.house_analysis import analyze_house_history, render_house_analysis_text, save_house_analysis_json
+from lottery_sim.analysis.house_sensitivity import run_house_sensitivity, render_house_sensitivity_text, save_house_sensitivity_json
 from lottery_sim.backtest.engine import run_backtest
 from lottery_sim.backtest.dlt_engine import run_dlt_backtest
 from lottery_sim.backtest.kl8_engine import run_kl8_backtest
 from lottery_sim.backtest.qlc_engine import run_qlc_backtest
 from lottery_sim.backtest.qxc_engine import run_qxc_backtest
 from lottery_sim.backtest.ssq_engine import run_ssq_backtest
+from lottery_sim.backtest.pl5_walk_forward import run_pl5_walk_forward
 from lottery_sim.data_sources.dlt_17500 import (
     fetch_17500_dlt_text,
     load_dlt_draws_csv,
@@ -72,6 +77,7 @@ from lottery_sim.games.qlc import QlcGame
 from lottery_sim.games.qxc import QxcGame
 from lottery_sim.games.ssq import SsqGame
 from lottery_sim.issue_calendar import next_issue_from_latest_draw
+from lottery_sim.history_db import record_training_record
 from lottery_sim.ml.ssq import (
     load_ssq_ml_model,
     recommend_ssq_ml,
@@ -87,6 +93,12 @@ from lottery_sim.ml.generic import (
     save_generic_ml_model,
     train_generic_ml_model,
 )
+from lottery_sim.ml.lightgbm_model import LightGbmPl5Model
+from lottery_sim.ml.logistic_pl5 import LogisticPl5Model
+from lottery_sim.ml.markov import MarkovPl5Model
+from lottery_sim.ml.random_model import RandomPl5Model
+from lottery_sim.ml.house_min_payout import HouseMinPayoutModel
+from lottery_sim.betting import BehavioralBettor, BetDistributionEstimator, UniformBettor
 from lottery_sim.recommendation_store import RecommendationStore
 from lottery_sim.recommendation_tracking import (
     available_recommendation_draws,
@@ -107,6 +119,7 @@ from lottery_sim.recommendations import generate_candidates, render_recommendati
 from lottery_sim.reports.compare_report import render_compare_report
 from lottery_sim.reports.stability_report import render_stability_report
 from lottery_sim.reports.text_report import render_backtest_report
+from lottery_sim.reports.pl5_model_comparison import ModelComparisonResult, render_model_comparison_text, save_model_comparison_json
 from lottery_sim.strategies.random_5d import Random5DStrategy
 from lottery_sim.strategies.random_strategy import Random3DStrategy
 from lottery_sim.strategies.random_dlt import RandomDltStrategy
@@ -432,6 +445,50 @@ def build_parser() -> argparse.ArgumentParser:
     _add_generic_ml_parsers(subparsers, "qlc", "七乐彩", _train_ml_qlc, _backtest_ml_qlc, _recommend_ml_qlc, _record_recommend_ml_qlc)
     _add_generic_ml_parsers(subparsers, "kl8", "快乐8", _train_ml_kl8, _backtest_ml_kl8, _recommend_ml_kl8, _record_recommend_ml_kl8, pick_size=True)
     _add_generic_ml_parsers(subparsers, "dlt", "大乐透", _train_ml_dlt, _backtest_ml_dlt, _recommend_ml_dlt, _record_recommend_ml_dlt)
+
+    compare_models_pl5 = subparsers.add_parser("compare-models-pl5", help="排列五统一概率模型 walk-forward 对比")
+    compare_models_pl5.add_argument("--csv", required=True)
+    compare_models_pl5.add_argument("--models", default="random,logistic,markov,lightgbm")
+    compare_models_pl5.add_argument("--min-train-draws", type=int, default=300)
+    compare_models_pl5.add_argument("--backtest-draws", type=int, default=500)
+    compare_models_pl5.add_argument("--retrain-every", type=int, default=20)
+    compare_models_pl5.add_argument("--candidate-count", type=int, default=100)
+    compare_models_pl5.add_argument("--top-k-values", default="10,50,100")
+    compare_models_pl5.add_argument("--seed", type=int, default=20260505)
+    compare_models_pl5.add_argument("--min-history", type=int, default=30)
+    compare_models_pl5.add_argument("--logistic-epochs", type=int, default=1)
+    compare_models_pl5.add_argument("--lightgbm-estimators", type=int, default=150)
+    compare_models_pl5.add_argument("--output-json", default="")
+    compare_models_pl5.add_argument("--output-text", default="")
+    compare_models_pl5.add_argument("--history-db", default="")
+    compare_models_pl5.add_argument("--bettor-model", choices=("uniform", "behavioral"), default="behavioral")
+    compare_models_pl5.add_argument("--house-temperature", type=float, default=1_000_000.0)
+    compare_models_pl5.add_argument("--simulated-ticket-count", type=int, default=1_000_000)
+    compare_models_pl5.set_defaults(func=_compare_models_pl5)
+
+    analyze_house_pl5 = subparsers.add_parser("analyze-house-pl5", help="排列五 minimum-payout hypothesis 历史异常分析")
+    analyze_house_pl5.add_argument("--csv", required=True)
+    analyze_house_pl5.add_argument("--bettor-model", choices=("uniform", "behavioral"), default="behavioral")
+    analyze_house_pl5.add_argument("--house-temperature", type=float, default=1_000_000.0)
+    analyze_house_pl5.add_argument("--simulated-ticket-count", type=int, default=1_000_000)
+    analyze_house_pl5.add_argument("--manual-pick-ratio", type=float, default=0.60)
+    analyze_house_pl5.add_argument("--machine-pick-ratio", type=float, default=0.40)
+    analyze_house_pl5.add_argument("--seed", type=int, default=20260505)
+    analyze_house_pl5.add_argument("--output-json", default="reports/latest/house-analysis-pl5.json")
+    analyze_house_pl5.add_argument("--output-text", default="reports/latest/house-analysis-pl5.txt")
+    analyze_house_pl5.set_defaults(func=_analyze_house_pl5)
+
+    sensitivity_pl5 = subparsers.add_parser("analyze-house-sensitivity-pl5", help="排列五 House hypothesis 参数稳健性与冻结holdout分析")
+    sensitivity_pl5.add_argument("--csv", required=True)
+    sensitivity_pl5.add_argument("--train-draws", type=int, default=5000)
+    sensitivity_pl5.add_argument("--top-n", type=int, default=20)
+    sensitivity_pl5.add_argument("--combination-count", type=int, default=32)
+    sensitivity_pl5.add_argument("--simulated-ticket-count", type=int, default=1_000_000)
+    sensitivity_pl5.add_argument("--seed", type=int, default=20260505)
+    sensitivity_pl5.add_argument("--bootstrap-samples", type=int, default=1000)
+    sensitivity_pl5.add_argument("--output-json", default="reports/latest/house-sensitivity-pl5.json")
+    sensitivity_pl5.add_argument("--output-text", default="reports/latest/house-sensitivity-pl5.txt")
+    sensitivity_pl5.set_defaults(func=_analyze_house_sensitivity_pl5)
 
     _add_record_recommend_parser(subparsers, "record-recommend-3d", "保存福彩3D推荐记录", _record_recommend_3d)
     _add_record_recommend_parser(subparsers, "record-recommend-pl3", "保存排列三推荐记录", _record_recommend_pl3)
@@ -1510,6 +1567,111 @@ def _recommend_ml_ssq(args) -> None:
         history_count=len(ordered_draws),
         latest_issue=latest_issue,
     ))
+
+
+def _compare_models_pl5(args) -> None:
+    draws = available_recommendation_draws(load_pl5_draws_csv(Path(args.csv)))
+    requested = tuple(value.strip().lower() for value in args.models.split(",") if value.strip())
+    allowed = {"random", "logistic", "markov", "lightgbm", "house"}
+    unknown = set(requested) - allowed
+    if unknown:
+        raise ValueError(f"unsupported PL5 models: {', '.join(sorted(unknown))}")
+    top_k_values = tuple(int(value.strip()) for value in args.top_k_values.split(",") if value.strip())
+    bettor = UniformBettor() if args.bettor_model == "uniform" else BehavioralBettor()
+    house_estimator = BetDistributionEstimator(
+        bettor,
+        simulated_ticket_count=args.simulated_ticket_count,
+        random_seed=args.seed,
+    )
+    factories = {
+        "random": lambda: RandomPl5Model(seed=args.seed),
+        "logistic": lambda: LogisticPl5Model(min_history=args.min_history, epochs=args.logistic_epochs),
+        "markov": lambda: MarkovPl5Model(min_history=args.min_history),
+        "lightgbm": lambda: LightGbmPl5Model(min_history=args.min_history, n_estimators=args.lightgbm_estimators, random_state=args.seed),
+        "house": lambda: HouseMinPayoutModel(estimator=house_estimator, house_temperature=args.house_temperature),
+    }
+    metrics = []
+    for model_name in requested:
+        result = run_pl5_walk_forward(
+            draws,
+            factories[model_name],
+            min_train_draws=args.min_train_draws,
+            backtest_draws=args.backtest_draws,
+            retrain_every=args.retrain_every,
+            candidate_count=args.candidate_count,
+            top_k_values=top_k_values,
+        )
+        metrics.append(result.metrics)
+        if args.history_db:
+            final_cutoff = result.training_cutoffs[-1] if result.training_cutoffs else ""
+            training_count = next((index + 1 for index, draw in enumerate(draws) if draw.issue == final_cutoff), 0)
+            parameters = {
+                "min_train_draws": args.min_train_draws,
+                "backtest_draws": args.backtest_draws,
+                "retrain_every": args.retrain_every,
+                "candidate_count": args.candidate_count,
+                "top_k_values": top_k_values,
+                "seed": args.seed,
+                "min_history": args.min_history,
+            }
+            record_training_record(Path(args.history_db), {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "game_code": "pl5", "game_name": "排列五", "action": "walk-forward",
+                "status": "completed", "summary": f"{model_name}: {result.metrics.backtest_draws} draws",
+                "model_name": model_name,
+                "train_start_issue": draws[0].issue if draws else "",
+                "train_end_issue": final_cutoff,
+                "training_draw_count": training_count,
+                "parameters_json": json.dumps(parameters, ensure_ascii=False),
+            })
+    comparison = ModelComparisonResult(game_code="pl5", models=tuple(metrics))
+    report_text = render_model_comparison_text(comparison)
+    if args.output_json:
+        save_model_comparison_json(comparison, Path(args.output_json))
+    if args.output_text:
+        output = Path(args.output_text)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(report_text, encoding="utf-8")
+    print(report_text)
+
+
+def _analyze_house_pl5(args) -> None:
+    draws = available_recommendation_draws(load_pl5_draws_csv(Path(args.csv)))
+    result = analyze_house_history(
+        draws,
+        bettor_model=args.bettor_model,
+        house_temperature=args.house_temperature,
+        simulated_ticket_count=args.simulated_ticket_count,
+        random_seed=args.seed,
+        manual_pick_ratio=args.manual_pick_ratio,
+        machine_pick_ratio=args.machine_pick_ratio,
+    )
+    save_house_analysis_json(result, Path(args.output_json))
+    report_text = render_house_analysis_text(result)
+    output = Path(args.output_text)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report_text, encoding="utf-8")
+    print(report_text)
+
+
+def _analyze_house_sensitivity_pl5(args) -> None:
+    from lottery_sim.analysis.house_sensitivity import deterministic_sensitivity_configs
+    draws = available_recommendation_draws(load_pl5_draws_csv(Path(args.csv)))
+    result = run_house_sensitivity(
+        draws,
+        train_count=args.train_draws,
+        top_n=args.top_n,
+        configs=deterministic_sensitivity_configs(args.combination_count),
+        simulated_ticket_count=args.simulated_ticket_count,
+        random_seed=args.seed,
+        bootstrap_samples=args.bootstrap_samples,
+    )
+    save_house_sensitivity_json(result, Path(args.output_json))
+    report_text = render_house_sensitivity_text(result)
+    output = Path(args.output_text)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report_text, encoding="utf-8")
+    print(report_text)
 
 
 def _train_ml_3d(args) -> None:

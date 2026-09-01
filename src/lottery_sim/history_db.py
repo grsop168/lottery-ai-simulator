@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -49,7 +50,12 @@ SCHEMA = (
         game_name TEXT NOT NULL,
         action TEXT NOT NULL,
         status TEXT NOT NULL,
-        summary TEXT NOT NULL
+        summary TEXT NOT NULL,
+        model_name TEXT NOT NULL DEFAULT '',
+        train_start_issue TEXT NOT NULL DEFAULT '',
+        train_end_issue TEXT NOT NULL DEFAULT '',
+        training_draw_count INTEGER NOT NULL DEFAULT 0,
+        parameters_json TEXT NOT NULL DEFAULT ''
     )
     """,
 )
@@ -58,15 +64,30 @@ SCHEMA = (
 def init_history_db(db_path: Path) -> None:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         for statement in SCHEMA:
             conn.execute(statement)
+        _ensure_training_record_columns(conn)
         conn.commit()
+
+
+def _ensure_training_record_columns(conn: sqlite3.Connection) -> None:
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(training_records)").fetchall()}
+    additions = {
+        "model_name": "TEXT NOT NULL DEFAULT ''",
+        "train_start_issue": "TEXT NOT NULL DEFAULT ''",
+        "train_end_issue": "TEXT NOT NULL DEFAULT ''",
+        "training_draw_count": "INTEGER NOT NULL DEFAULT 0",
+        "parameters_json": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, declaration in additions.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE training_records ADD COLUMN {name} {declaration}")
 
 
 def record_dashboard_action(db_path: Path, record: Dict[str, Any]) -> None:
     init_history_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO dashboard_actions (
@@ -92,7 +113,7 @@ def record_dashboard_action(db_path: Path, record: Dict[str, Any]) -> None:
 
 def load_dashboard_actions(db_path: Path, limit: int = 100) -> List[Dict[str, Any]]:
     init_history_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -109,7 +130,7 @@ def load_dashboard_actions(db_path: Path, limit: int = 100) -> List[Dict[str, An
 
 def sync_recommendation_records(db_path: Path, records: Iterable[Any]) -> None:
     init_history_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.executemany(
             """
             INSERT OR REPLACE INTO recommendation_records (
@@ -147,7 +168,7 @@ def save_dashboard_config(db_path: Path, config: Dict[str, str]) -> None:
         "llm_model",
         "llm_api_key",
     }
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         for key, value in config.items():
             if key not in allowed:
                 continue
@@ -160,7 +181,7 @@ def save_dashboard_config(db_path: Path, config: Dict[str, str]) -> None:
 
 def load_dashboard_config(db_path: Path) -> Dict[str, str]:
     init_history_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute("SELECT key, value FROM dashboard_config").fetchall()
     config = {str(key): str(value) for key, value in rows}
     api_key = config.get("llm_api_key", "")
@@ -180,12 +201,14 @@ def mask_api_key(value: str) -> str:
 
 def record_training_record(db_path: Path, record: Dict[str, Any]) -> None:
     init_history_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             """
             INSERT INTO training_records (
-                created_at, game_code, game_name, action, status, summary
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                created_at, game_code, game_name, action, status, summary,
+                model_name, train_start_issue, train_end_issue,
+                training_draw_count, parameters_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(record.get("created_at", "")),
@@ -194,6 +217,11 @@ def record_training_record(db_path: Path, record: Dict[str, Any]) -> None:
                 str(record.get("action", "")),
                 str(record.get("status", "")),
                 str(record.get("summary", "")),
+                str(record.get("model_name", "")),
+                str(record.get("train_start_issue", "")),
+                str(record.get("train_end_issue", "")),
+                int(record.get("training_draw_count", 0) or 0),
+                str(record.get("parameters_json", "")),
             ),
         )
         conn.commit()
@@ -201,11 +229,13 @@ def record_training_record(db_path: Path, record: Dict[str, Any]) -> None:
 
 def load_training_records(db_path: Path, limit: int = 50) -> List[Dict[str, Any]]:
     init_history_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT created_at, game_code, game_name, action, status, summary
+            SELECT created_at, game_code, game_name, action, status, summary,
+                   model_name, train_start_issue, train_end_issue,
+                   training_draw_count, parameters_json
             FROM training_records
             ORDER BY id DESC
             LIMIT ?

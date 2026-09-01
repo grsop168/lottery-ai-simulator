@@ -154,6 +154,25 @@ foreach ($gameConfig in $SelectedGames) {
     $mlModel = Join-Path $ModelDir "$($gameConfig.Code)-ml.json"
     Invoke-LotteryCommand -Name "train-ml-$($gameConfig.Code)" -Arguments (@("train-ml-$($gameConfig.Code)", "--csv", $gameConfig.Csv, "--model", $mlModel, "--min-history", "$MlMinHistory", "--epochs", "$MlTrainEpochs") + $gameConfig.Extra)
     Invoke-LotteryCommand -Name "backtest-ml-$($gameConfig.Code)" -Arguments (@("backtest-ml-$($gameConfig.Code)", "--csv", $gameConfig.Csv, "--min-train", "$MlMinTrain", "--min-history", "$MlMinHistory", "--limit", "$MlBacktestLimit", "--retrain-every", "$MlRetrainEvery", "--epochs", "$MlBacktestEpochs") + $gameConfig.Extra) -OutputFile "$ReportDir/backtest-ml-$($gameConfig.Code).txt"
+    if ($gameConfig.Code -eq "pl5") {
+        Invoke-LotteryCommand -Name "compare-models-pl5" -Arguments @(
+            "compare-models-pl5", "--csv", $gameConfig.Csv,
+            "--models", "random,logistic,markov,lightgbm,house",
+            "--min-train-draws", "$MlMinTrain", "--backtest-draws", "$MlBacktestLimit",
+            "--retrain-every", "$MlRetrainEvery", "--candidate-count", "100",
+            "--min-history", "$MlMinHistory", "--logistic-epochs", "$MlBacktestEpochs",
+            "--history-db", (Join-Path (Split-Path $ModelDir -Parent) "history.sqlite3"),
+            "--output-json", "$ReportDir/model-comparison-pl5.json",
+            "--output-text", "$ReportDir/model-comparison-pl5.txt"
+        )
+        Invoke-LotteryCommand -Name "analyze-house-pl5" -Arguments @(
+            "analyze-house-pl5", "--csv", $gameConfig.Csv,
+            "--bettor-model", "behavioral", "--house-temperature", "1000000",
+            "--simulated-ticket-count", "1000000",
+            "--output-json", "$ReportDir/house-analysis-pl5.json",
+            "--output-text", "$ReportDir/house-analysis-pl5.txt"
+        )
+    }
     Invoke-LotteryCommand -Name "recommend-ml-$($gameConfig.Code)" -Arguments (@("recommend-ml-$($gameConfig.Code)", "--csv", $gameConfig.Csv, "--model", $mlModel, "--count", "$Count", "--min-history", "$MlMinHistory", "--epochs", "$MlTrainEpochs") + $gameConfig.Extra) -OutputFile "$ReportDir/recommend-ml-$($gameConfig.Code).txt"
     Invoke-LotteryCommand -Name "record-ml-$($gameConfig.Code)" -Arguments (@(
         "record-recommend-ml-$($gameConfig.Code)",
