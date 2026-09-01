@@ -74,6 +74,39 @@ def render_recommendation_report(
     return "\n".join(lines)
 
 
+def diversify_ranked_candidates(
+    candidates: Sequence[Candidate],
+    count: int = 10,
+    minimum_different_positions: int = 2,
+) -> List[Candidate]:
+    """Greedily select a stable diverse subset from an already probability-ranked pool."""
+    if count <= 0:
+        raise ValueError("candidate count must be positive")
+    selected: List[Candidate] = []
+    selected_numbers = set()
+    for distance in range(minimum_different_positions, -1, -1):
+        for candidate in candidates:
+            if candidate.number_text in selected_numbers:
+                continue
+            if all(_different_positions(candidate.number_text, item.number_text) >= distance for item in selected):
+                selected.append(candidate)
+                selected_numbers.add(candidate.number_text)
+                if len(selected) == count:
+                    return _rerank_candidates(selected, "多样化Top10")
+    return _rerank_candidates(selected, "多样化Top10")
+
+
+def _different_positions(left: str, right: str) -> int:
+    return sum(a != b for a, b in zip(left, right)) + abs(len(left) - len(right))
+
+
+def _rerank_candidates(candidates: Sequence[Candidate], strategy_name: str) -> List[Candidate]:
+    return [
+        Candidate(index, strategy_name, candidate.numbers, candidate.number_text, candidate.reason)
+        for index, candidate in enumerate(candidates, start=1)
+    ]
+
+
 def _try_add_candidate(candidates, seen, history, game, strategy) -> None:
     pick = game.validate_pick(strategy.generate(history))
     number_text = _number_text(pick)

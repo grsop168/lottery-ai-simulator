@@ -434,6 +434,7 @@ def _dashboard_command(
     ]
     if action == "generate":
         command.append("-SkipNormalize")
+    command.append("-FastGenerate")
     command.extend(_dashboard_daily_options(game_code, options))
     _append_dashboard_path_options(
         command,
@@ -1974,6 +1975,16 @@ def _render_candidate_score_table(scores: Sequence[DashboardCandidateScore]) -> 
 
 
 def _render_candidate_groups(game: GameDashboard) -> str:
+    if game.code == "pl5":
+        probability = [candidate for candidate in game.candidates if candidate.strategy == "概率Top10"]
+        diversified = [candidate for candidate in game.candidates if candidate.strategy == "多样化Top10"]
+        if probability or diversified:
+            other = [candidate for candidate in game.candidates if candidate not in probability and candidate not in diversified and "随机" not in candidate.strategy]
+            return "".join((
+                _render_candidate_table(game, "概率Top10", probability, "严格按模型概率排序，用于科学比较；此列表不做多样化调整。"),
+                _render_candidate_table(game, "多样化Top10", diversified, "从高概率候选池稳定选取，优先保证任意两注至少两位不同。"),
+                _render_candidate_table(game, "其他参考候选", other, "传统统计策略仅作为参考。"),
+            ))
     primary = _primary_candidates(game)
     reference = [candidate for candidate in game.candidates if candidate not in primary and "随机" not in candidate.strategy]
     sections = [
@@ -2073,9 +2084,19 @@ def _recommendation_hit_detail(record: RecommendationRecord) -> Optional[Tuple[s
     miss_sections: List[str] = []
     for index, predicted in enumerate(prediction_sections):
         actual = draw_sections[index] if index < len(draw_sections) else ()
-        actual_set = set(actual)
-        hits = tuple(number for number in predicted if number in actual_set)
-        misses = tuple(number for number in predicted if number not in actual_set)
+        if record.game_code in {"3d", "pl3", "pl5", "qxc"}:
+            hits = tuple(
+                number for position, number in enumerate(predicted)
+                if position < len(actual) and number == actual[position]
+            )
+            misses = tuple(
+                number for position, number in enumerate(predicted)
+                if position >= len(actual) or number != actual[position]
+            )
+        else:
+            actual_set = set(actual)
+            hits = tuple(number for number in predicted if number in actual_set)
+            misses = tuple(number for number in predicted if number not in actual_set)
         label = labels[index] if index < len(labels) else "号码"
         summaries.append(f"{label} {len(hits)}/{len(predicted)}")
         hit_sections.append(" ".join(hits))

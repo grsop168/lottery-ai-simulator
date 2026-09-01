@@ -115,7 +115,7 @@ from lottery_sim.recommendation_summary import (
     render_recommendation_summary_report,
     summarize_recommendation_records,
 )
-from lottery_sim.recommendations import generate_candidates, render_recommendation_report
+from lottery_sim.recommendations import Candidate, diversify_ranked_candidates, generate_candidates, render_recommendation_report
 from lottery_sim.reports.compare_report import render_compare_report
 from lottery_sim.reports.stability_report import render_stability_report
 from lottery_sim.reports.text_report import render_backtest_report
@@ -1826,15 +1826,37 @@ def _recommend_ml_generic(args, game_code: str) -> None:
     else:
         model = train_generic_ml_model(draws, adapter, min_history=args.min_history, epochs=args.epochs)
         save_generic_ml_model(model, model_path)
-    candidates = recommend_generic_ml(draws, model, adapter, count=args.count)
+    pool_count = max(args.count, 500) if game_code == "pl5" else args.count
+    candidate_pool = recommend_generic_ml(draws, model, adapter, count=pool_count)
+    candidates = candidate_pool[:args.count]
     ordered_draws = tuple(sorted(draws, key=lambda draw: int(draw.issue)))
     latest_issue = ordered_draws[-1].issue if ordered_draws else ""
-    print(render_recommendation_report(
+    probability_report = render_recommendation_report(
         game_name=f"{game.name}机器学习",
         candidates=candidates,
         history_count=len(ordered_draws),
         latest_issue=latest_issue,
-    ))
+    )
+    if game_code == "pl5":
+        probability_candidates = [
+            Candidate(item.rank, "概率Top10", item.numbers, item.number_text, item.reason)
+            for item in candidates
+        ]
+        diversified = diversify_ranked_candidates(candidate_pool, count=args.count)
+        print(render_recommendation_report(
+            game_name=f"{game.name} 概率Top10",
+            candidates=probability_candidates,
+            history_count=len(ordered_draws),
+            latest_issue=latest_issue,
+        ))
+        print("\n\n" + render_recommendation_report(
+            game_name=f"{game.name} 多样化Top10",
+            candidates=diversified,
+            history_count=len(ordered_draws),
+            latest_issue=latest_issue,
+        ))
+        return
+    print(probability_report)
 
 
 def _record_recommend_ml_generic(args, game_code: str) -> None:
@@ -1858,7 +1880,15 @@ def _record_recommend_ml_generic(args, game_code: str) -> None:
         if not args.target_issue and not args.history_until:
             save_generic_ml_model(model, model_path)
 
-    candidates = recommend_generic_ml(window.history, model, adapter, count=args.count)
+    if game_code == "pl5":
+        candidate_pool = recommend_generic_ml(window.history, model, adapter, count=max(args.count, 500))
+        probability_candidates = [
+            Candidate(item.rank, "概率Top10", item.numbers, item.number_text, item.reason)
+            for item in candidate_pool[:args.count]
+        ]
+        candidates = probability_candidates + diversify_ranked_candidates(candidate_pool, count=args.count)
+    else:
+        candidates = recommend_generic_ml(window.history, model, adapter, count=args.count)
     records = create_recommendation_records(
         game_code=game_code,
         game_name=game.name,

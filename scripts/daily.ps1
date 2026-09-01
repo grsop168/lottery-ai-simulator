@@ -17,6 +17,7 @@ param(
     [int]$MlBacktestLimit = 30,
     [int]$MlRetrainEvery = 10,
     [switch]$SkipNormalize,
+    [switch]$FastGenerate,
     [switch]$DryRun
 )
 
@@ -146,15 +147,19 @@ foreach ($gameConfig in $SelectedGames) {
         Assert-DataFile -Path $gameConfig.Csv
     }
 
-    Invoke-LotteryCommand -Name "backtest-$($gameConfig.Code)" -Arguments (@($gameConfig.Backtest, "--csv", $gameConfig.Csv) + $gameConfig.Extra + @("--seed", "$Seed")) -OutputFile "$ReportDir/backtest-$($gameConfig.Code).txt"
-    Invoke-LotteryCommand -Name "compare-$($gameConfig.Code)" -Arguments (@($gameConfig.Compare, "--csv", $gameConfig.Csv) + $gameConfig.Extra + @("--seed", "$Seed", "--window", "$Window")) -OutputFile "$ReportDir/compare-$($gameConfig.Code).txt"
-    Invoke-LotteryCommand -Name "stability-$($gameConfig.Code)" -Arguments (@($gameConfig.Stability, "--csv", $gameConfig.Csv) + $gameConfig.Extra + @("--seeds", $Seeds, "--window", "$Window")) -OutputFile "$ReportDir/stability-$($gameConfig.Code).txt"
+    if (-not $FastGenerate) {
+        Invoke-LotteryCommand -Name "backtest-$($gameConfig.Code)" -Arguments (@($gameConfig.Backtest, "--csv", $gameConfig.Csv) + $gameConfig.Extra + @("--seed", "$Seed")) -OutputFile "$ReportDir/backtest-$($gameConfig.Code).txt"
+        Invoke-LotteryCommand -Name "compare-$($gameConfig.Code)" -Arguments (@($gameConfig.Compare, "--csv", $gameConfig.Csv) + $gameConfig.Extra + @("--seed", "$Seed", "--window", "$Window")) -OutputFile "$ReportDir/compare-$($gameConfig.Code).txt"
+        Invoke-LotteryCommand -Name "stability-$($gameConfig.Code)" -Arguments (@($gameConfig.Stability, "--csv", $gameConfig.Csv) + $gameConfig.Extra + @("--seeds", $Seeds, "--window", "$Window")) -OutputFile "$ReportDir/stability-$($gameConfig.Code).txt"
+    }
     Invoke-LotteryCommand -Name "recommend-$($gameConfig.Code)" -Arguments (@($gameConfig.Recommend, "--csv", $gameConfig.Csv) + $gameConfig.Extra + @("--seed", "$Seed", "--window", "$Window", "--count", "$Count")) -OutputFile "$ReportDir/recommend-$($gameConfig.Code).txt"
 
     $mlModel = Join-Path $ModelDir "$($gameConfig.Code)-ml.json"
     Invoke-LotteryCommand -Name "train-ml-$($gameConfig.Code)" -Arguments (@("train-ml-$($gameConfig.Code)", "--csv", $gameConfig.Csv, "--model", $mlModel, "--min-history", "$MlMinHistory", "--epochs", "$MlTrainEpochs") + $gameConfig.Extra)
-    Invoke-LotteryCommand -Name "backtest-ml-$($gameConfig.Code)" -Arguments (@("backtest-ml-$($gameConfig.Code)", "--csv", $gameConfig.Csv, "--min-train", "$MlMinTrain", "--min-history", "$MlMinHistory", "--limit", "$MlBacktestLimit", "--retrain-every", "$MlRetrainEvery", "--epochs", "$MlBacktestEpochs") + $gameConfig.Extra) -OutputFile "$ReportDir/backtest-ml-$($gameConfig.Code).txt"
-    if ($gameConfig.Code -eq "pl5") {
+    if (-not $FastGenerate) {
+        Invoke-LotteryCommand -Name "backtest-ml-$($gameConfig.Code)" -Arguments (@("backtest-ml-$($gameConfig.Code)", "--csv", $gameConfig.Csv, "--min-train", "$MlMinTrain", "--min-history", "$MlMinHistory", "--limit", "$MlBacktestLimit", "--retrain-every", "$MlRetrainEvery", "--epochs", "$MlBacktestEpochs") + $gameConfig.Extra) -OutputFile "$ReportDir/backtest-ml-$($gameConfig.Code).txt"
+    }
+    if ($gameConfig.Code -eq "pl5" -and -not $FastGenerate) {
         Invoke-LotteryCommand -Name "compare-models-pl5" -Arguments @(
             "compare-models-pl5", "--csv", $gameConfig.Csv,
             "--models", "random,logistic,markov,lightgbm,house",

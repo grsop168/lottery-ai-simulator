@@ -30,6 +30,7 @@ class DashboardMultiUserTests(unittest.TestCase):
         self.assertIn("data/users/alice/recommendations", command)
         self.assertIn("-ModelDir", command)
         self.assertIn("data/users/alice/models", command)
+        self.assertIn("-FastGenerate", command)
 
     def test_start_dashboard_job_blocks_second_running_job_for_same_user(self):
         thread = Mock()
