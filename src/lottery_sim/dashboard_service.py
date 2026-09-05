@@ -4,10 +4,10 @@ import json
 import os
 from pathlib import Path
 import socket
-import subprocess
 import sys
-import time
 import traceback
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 from urllib.request import ProxyHandler, build_opener
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,7 +22,7 @@ def state(root=ROOT):
     try:
         with build_opener(ProxyHandler({})).open(URL + '/health', timeout=3) as response:
             health = json.load(response)
-        if health.get('ok') is True and health.get('server') == 'fastapi' and health.get('project_id') == project_id(root):
+        if response.status == 200 and health.get('ok') is True and health.get('server') == 'fastapi' and health.get('project_id') == project_id(root):
             return 'running'
     except (OSError, ValueError):
         pass
@@ -44,42 +44,19 @@ def supervise(root=ROOT):
         lock.seek(0)
         try:
             msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            if state(root) == 'running':
-                print('ALREADY_RUNNING http://127.0.0.1:8765', flush=True)
-                return 0
-            raise RuntimeError('Dashboard supervisor is starting or unhealthy')
-        current = state(root)
-        if current == 'occupied':
-            raise RuntimeError('PORT_CONFLICT 8765: not a healthy dashboard from this project')
-        if current == 'running':
-            print('ALREADY_RUNNING monitoring existing dashboard', flush=True)
-            while state(root) == 'running':
-                time.sleep(15)
-            raise RuntimeError('Existing dashboard exited or became unavailable; retry required')
-        python = root / '.venv/Scripts/python.exe'
-        command = [str(python), '-u', '-m', 'lottery_sim.cli', 'dashboard', '--server', 'fastapi',
-                   '--reports', 'reports/users/admin/latest', '--host', '127.0.0.1', '--port', '8765']
-        env = dict(os.environ, PYTHONPATH=str(root / 'src'), PYTHONIOENCODING='utf-8')
-        print('START ' + subprocess.list2cmdline(command), flush=True)
-        child = subprocess.Popen(command, cwd=root, env=env, creationflags=subprocess.CREATE_NO_WINDOW)
-        try:
-            for _ in range(60):
-                if child.poll() is not None:
-                    raise RuntimeError(f'Dashboard startup failed exit={child.returncode}')
-                if state(root) == 'running':
-                    print('READY http://127.0.0.1:8765', flush=True)
-                    break
-                time.sleep(1)
-            else:
-                raise RuntimeError('Dashboard startup health check timed out')
-            code = child.wait()
-            # Even a clean unexpected exit must restart this persistent service.
-            raise RuntimeError(f'Dashboard exited code={code}; retry required')
-        finally:
-            if child.poll() is None:
-                child.terminate()
-                child.wait(timeout=15)
+        except OSError as exc:
+            raise RuntimeError('Dashboard service lock is already held; refusing unowned service') from exc
+        if state(root) != 'stopped':
+            raise RuntimeError('PORT_CONFLICT 8765: refusing to monitor an unowned listener')
+        # uvicorn blocks in this process; the scheduler owns the actual server.
+        from lottery_sim.fastapi_app import serve_fastapi_dashboard
+        print(f'START pid={os.getpid()} python={sys.executable}', flush=True)
+        serve_fastapi_dashboard(
+            reports_dir=root / 'reports/users/admin/latest',
+            host='127.0.0.1', port=8765, open_browser=False, repo_root=root,
+        )
+        raise RuntimeError('Dashboard exited; retry required')
+
 
 
 def main():
@@ -94,5 +71,29 @@ def main():
         return 1
 
 
+def run_logged(root=ROOT):
+    """Install file streams before uvicorn configures logging (pythonw has none)."""
+    logs = root / 'reports/logs'
+    logs.mkdir(parents=True, exist_ok=True)
+    log = logs / f'dashboard-{datetime.now():%Y%m%d-%H%M%S-%f}-{os.getpid()}.log'
+    with log.open('a', encoding='utf-8', buffering=1) as output:
+        with redirect_stdout(output), redirect_stderr(output):
+            code = 1
+            print(f'SERVICE START {datetime.now().isoformat()} pid={os.getpid()} python={sys.executable}', flush=True)
+            try:
+                code = main()
+                return code
+            except BaseException:
+                traceback.print_exc()
+                raise
+            finally:
+                print(f'SERVICE EXIT {datetime.now().isoformat()} code={code}', flush=True)
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    # Absolute script invocation works without activation or inherited PYTHONPATH.
+    sys.path.insert(0, str(ROOT / 'src'))
+    os.chdir(ROOT)
+    if '--check' in sys.argv:
+        sys.exit(main())
+    sys.exit(run_logged())

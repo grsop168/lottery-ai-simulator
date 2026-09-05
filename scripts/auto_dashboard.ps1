@@ -15,7 +15,8 @@ try {
     "Start: $((Get-Date).ToString('o')) Python: $python Working directory: $root" | Set-Content $log -Encoding UTF8
     if (-not (Test-Path -LiteralPath $python)) { throw 'Project .venv python unavailable' }
     $ErrorActionPreference = 'Continue'
-    & $python -u -m lottery_sim.dashboard_service 2>&1 | ForEach-Object { "$_" | Add-Content $log -Encoding UTF8 }
+    # Synchronous invocation: never detach the server from this wrapper.
+    & $python -u "$root\src\lottery_sim\dashboard_service.py" 2>&1 | ForEach-Object { "$_" | Add-Content $log -Encoding UTF8 }
     $code = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
 }
