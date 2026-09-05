@@ -17,6 +17,7 @@ from lottery_sim.dashboard import (
     start_dashboard_job,
 )
 from lottery_sim.user_workspace import workspace_for_user
+from lottery_sim.dashboard_service import project_id
 
 
 FASTAPI_INSTALL_HINT = "pip install fastapi uvicorn"
@@ -117,7 +118,7 @@ def create_fastapi_app(reports_dir: Path, repo_root: Path):
 
     @app.get("/health")
     async def health():
-        return {"ok": True, "server": "fastapi"}
+        return {"ok": True, "server": "fastapi", "project_id": project_id(root_path)}
 
     @app.post("/api/jobs/{action}")
     async def start_job(action: str, request: Request):

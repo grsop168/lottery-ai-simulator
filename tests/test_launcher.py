@@ -41,6 +41,7 @@ class LauncherTests(unittest.TestCase):
             patch.object(sys, "frozen", True, create=True),
             patch.object(sys, "executable", str(root / "lottery-ai-simulator.exe")),
             patch.dict(os.environ, {}, clear=True),
+            patch("launcher.dashboard_health_ok", return_value=False),
             patch("lottery_sim.fastapi_app.serve_fastapi_dashboard", serve),
         ):
             launcher.run_dashboard(root=root, host="127.0.0.1", port=8765, open_browser=True)

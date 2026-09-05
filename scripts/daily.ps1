@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$DataDir = "data/normalized",
     [string]$ReportDir = "reports/latest",
@@ -31,6 +31,19 @@ $env:PYTHONIOENCODING = "utf-8"
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $RepoRoot
 $env:PYTHONPATH = "src"
+
+if ($FastGenerate -and $Game -eq "pl5" -and -not $DryRun -and $env:LOTTERY_PL5_WORKER -ne "1") {
+    $parameters = @{}
+    foreach ($key in $PSBoundParameters.Keys) {
+        $value = $PSBoundParameters[$key]
+        if ($value -is [System.Management.Automation.SwitchParameter]) { $value = [bool]$value }
+        $parameters[$key] = $value
+    }
+    $json = ConvertTo-Json -Compress -InputObject $parameters
+    & python -m lottery_sim.auto_pl5 ($json -replace '"', '\"')
+    if ($LASTEXITCODE -ne 0) { throw "PL5 FastGenerate failed: $LASTEXITCODE" }
+    return
+}
 
 $Games = @(
     [pscustomobject]@{ Code = "3d"; Csv = "$DataDir/fucai3d.csv"; Update = "update-3d"; Backtest = "backtest-3d"; Compare = "compare-3d"; Stability = "stability-3d"; Recommend = "recommend-3d"; Record = "record-recommend-3d"; Verify = "verify-recommend-3d"; Extra = @() },
@@ -215,6 +228,7 @@ foreach ($gameConfig in $SelectedGames) {
     }
     else {
         foreach ($recordFile in $recordFiles) {
+            if ($FastGenerate -and $gameConfig.Code -eq "pl5") { continue }
             Invoke-LotteryCommand -Name "verify-$($gameConfig.Code)-$($recordFile.BaseName)" -Arguments (@(
                 $gameConfig.Verify,
                 "--csv",
